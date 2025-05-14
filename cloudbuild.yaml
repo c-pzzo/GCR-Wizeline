@@ -1,0 +1,37 @@
+substitutions:
+  _PROJECT_ID: 'virtualtryon-451319'
+  _REGION: 'us-central1'
+  _REPOSITORY: 'ml-models'
+  _SERVICE_NAME: 'ml-prediction-service'
+  _SERVICE_ACCOUNT: 'main-mlops-wzline@virtualtryon-451319.iam.gserviceaccount.com'
+
+steps:
+  # Step 1: Build image with Cloud Buildpacks and push to Artifact Registry
+  - name: 'gcr.io/k8s-skaffold/pack'
+    entrypoint: 'pack'
+    args: [
+      'build',
+      '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}',
+      '--builder', 'gcr.io/buildpacks/builder:v1',
+      '--publish'
+    ]
+
+  # Step 2: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args: [
+      'run', 'deploy', '${_SERVICE_NAME}',
+      '--image', '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}',
+      '--region', '${_REGION}',
+      '--platform', 'managed',
+      '--allow-unauthenticated',
+      '--service-account', '${_SERVICE_ACCOUNT}',
+      '--cpu', '2',
+      '--memory', '2Gi',
+      '--timeout', '300',
+      '--concurrency', '100',
+      '--set-env-vars', 'MODEL_BUCKET=ml-data-451319'
+    ]
+
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,1 @@
+web: uvicorn main-fastapi:app --host=0.0.0.0 --port=8080
