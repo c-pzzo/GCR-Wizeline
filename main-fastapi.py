@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="ML Prediction Service",
-    description="LightGBM model serving via FastAPI on Cloud Run",
+    description="Dynamic ML model serving via FastAPI on Cloud Run",
     version="1.0.0"
 )
 
@@ -56,67 +56,141 @@ class PredictionResponse(BaseModel):
     predictions: List[float]
     model_info: Dict[str, Any]
 
+def get_model_type_from_metadata() -> str:
+    """Extract model type from metadata with fallback"""
+    if model_metadata:
+        # Try multiple possible keys for model type
+        model_type = (
+            model_metadata.get('best_model_name') or 
+            model_metadata.get('model_type') or 
+            model_metadata.get('algorithm')
+        )
+        if model_type:
+            return str(model_type)
+    
+    # Fallback: try to detect from the model object itself
+    if model:
+        model_class = model.__class__.__name__
+        if hasattr(model, 'named_steps'):  # Pipeline
+            # Get the actual model from pipeline
+            for step_name, step in model.named_steps.items():
+                if 'model' in step_name.lower():
+                    model_class = step.__class__.__name__
+                    break
+        
+        # Map class names to readable names
+        class_mapping = {
+            'LGBMRegressor': 'LightGBM',
+            'XGBRegressor': 'XGBoost',
+            'RandomForestRegressor': 'Random Forest',
+            'ExtraTreesRegressor': 'Extra Trees',
+            'LinearRegression': 'Linear Regression',
+            'Ridge': 'Ridge Regression',
+            'Lasso': 'Lasso Regression',
+            'SVR': 'Support Vector Regression'
+        }
+        
+        return class_mapping.get(model_class, model_class)
+    
+    return 'Unknown'
+
+def get_model_version() -> str:
+    """Extract model version/timestamp from metadata"""
+    if model_metadata:
+        return (
+            model_metadata.get('timestamp') or 
+            model_metadata.get('version') or 
+            'Unknown'
+        )
+    return 'Unknown'
+
+def get_model_performance() -> Dict[str, Any]:
+    """Extract model performance metrics from metadata"""
+    if model_metadata and 'performance' in model_metadata:
+        return model_metadata['performance']
+    return {}
+
 @app.on_event("startup")
 async def startup_event():
-    """Load model on startup - with timeout handling"""
-    try:
-        # Load model asynchronously with timeout
-        task = asyncio.create_task(load_latest_model())
-        await asyncio.wait_for(task, timeout=60.0)  # 60 second timeout
-    except asyncio.TimeoutError:
-        logger.warning("Model loading timed out during startup. Will load on first request.")
-    except Exception as e:
-        logger.warning(f"Failed to load model during startup: {e}. Will retry on first request.")
-
-
-async def load_latest_model():
-    """Load the latest model from Cloud Storage"""
-    global model, model_metadata
+    """Load model on startup with detailed logging"""
+    logger.info("🚀 Starting up ML Prediction Service...")
+    logger.info(f"MODEL_BUCKET environment variable: {os.getenv('MODEL_BUCKET', 'NOT SET')}")
     
     try:
-        bucket_name = os.getenv('MODEL_BUCKET', 'ml-data-451319')
+        await load_latest_model()
+        logger.info("✅ Model loaded successfully during startup")
+    except Exception as e:
+        logger.error(f"❌ Failed to load model during startup: {e}")
+        logger.info("⚠️ Service will continue without model. Use /model/reload to load manually.")
+
+async def load_latest_model():
+    """Load the latest model from Cloud Storage with detailed logging"""
+    global model, model_metadata
+    
+    bucket_name = os.getenv('MODEL_BUCKET', 'ml-data-451319')
+    logger.info(f"🔍 Looking for models in bucket: {bucket_name}")
+    
+    try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
+        logger.info(f"✅ Connected to bucket: {bucket_name}")
         
-        # Find latest model
+        # Find latest model with more detailed logging
         model_files = []
-        for blob in bucket.list_blobs(prefix='models/'):
+        logger.info("🔍 Scanning for model files...")
+        
+        blobs = list(bucket.list_blobs(prefix='models/'))
+        logger.info(f"Found {len(blobs)} objects in models/ folder")
+        
+        for blob in blobs:
+            logger.info(f"Checking blob: {blob.name}")
             if blob.name.endswith('_model.pkl'):
                 timestamp = blob.name.split('/')[-1].replace('_model.pkl', '')
                 model_files.append((timestamp, blob.name))
+                logger.info(f"Found model file: {blob.name} (timestamp: {timestamp})")
         
         if not model_files:
-            raise Exception("No model files found!")
+            raise Exception(f"No model files found in bucket {bucket_name}/models/")
         
         # Get latest model
         model_files.sort(reverse=True)
         latest_timestamp, latest_model_path = model_files[0]
+        logger.info(f"🎯 Selected latest model: {latest_model_path}")
         
         # Download model
         temp_model_path = "/tmp/model.pkl"
         model_blob = bucket.blob(latest_model_path)
+        
+        logger.info(f"⬇️ Downloading model from {latest_model_path}...")
         model_blob.download_to_filename(temp_model_path)
+        logger.info(f"✅ Model downloaded to {temp_model_path}")
         
         # Load model
+        logger.info("📦 Loading model with joblib...")
         model = joblib.load(temp_model_path)
-        logger.info(f"✅ Model loaded successfully: {latest_timestamp}")
+        logger.info(f"✅ Model loaded successfully! Type: {type(model)}")
         
         # Try to load metadata
         try:
             metadata_path = latest_model_path.replace('_model.pkl', '_metadata.json')
+            logger.info(f"🔍 Looking for metadata at: {metadata_path}")
             metadata_blob = bucket.blob(metadata_path)
             metadata_text = metadata_blob.download_as_text()
             model_metadata = json.loads(metadata_text)
             logger.info("✅ Model metadata loaded")
+            logger.info(f"📊 Model type from metadata: {get_model_type_from_metadata()}")
         except Exception as e:
-            logger.warning(f"Could not load metadata: {e}")
+            logger.warning(f"⚠️ Could not load metadata: {e}")
             model_metadata = {"version": latest_timestamp}
         
         # Clean up temp file
         os.remove(temp_model_path)
+        logger.info("🧹 Cleaned up temporary model file")
         
     except Exception as e:
         logger.error(f"❌ Failed to load model: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise
 
 @app.get("/")
@@ -125,6 +199,7 @@ async def root():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
+        "model_type": get_model_type_from_metadata() if model else None,
         "service": "ML Prediction Service",
         "version": "1.0.0"
     }
@@ -135,18 +210,10 @@ async def health_check():
     return {
         "status": "healthy" if model is not None else "unhealthy",
         "model_loaded": model is not None,
-        "model_type": model_metadata.get('best_model_name', 'Unknown') if model_metadata else 'Unknown',
-        "timestamp": model_metadata.get('timestamp', 'Unknown') if model_metadata else 'Unknown'
+        "model_type": get_model_type_from_metadata(),
+        "model_version": get_model_version()
     }
 
-async def ensure_model_loaded():
-    """Ensure model is loaded before prediction"""
-    global model
-    if model is None:
-        await load_latest_model()
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not available")
-    
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_single(request: SinglePredictionRequest):
     """Single prediction endpoint"""
@@ -166,9 +233,10 @@ async def predict_single(request: SinglePredictionRequest):
         return PredictionResponse(
             predictions=prediction.tolist(),
             model_info={
-                "model_type": model_metadata.get('best_model_name', 'LightGBM') if model_metadata else 'LightGBM',
-                "version": model_metadata.get('timestamp', 'Unknown') if model_metadata else 'Unknown',
-                "prediction_count": 1
+                "model_type": get_model_type_from_metadata(),
+                "version": get_model_version(),
+                "prediction_count": 1,
+                "performance": get_model_performance()
             }
         )
     except Exception as e:
@@ -195,9 +263,10 @@ async def predict_batch(request: BatchPredictionRequest):
         return PredictionResponse(
             predictions=predictions.tolist(),
             model_info={
-                "model_type": model_metadata.get('best_model_name', 'LightGBM') if model_metadata else 'LightGBM',
-                "version": model_metadata.get('timestamp', 'Unknown') if model_metadata else 'Unknown',
-                "prediction_count": len(predictions)
+                "model_type": get_model_type_from_metadata(),
+                "version": get_model_version(),
+                "prediction_count": len(predictions),
+                "performance": get_model_performance()
             }
         )
     except Exception as e:
@@ -237,9 +306,10 @@ async def predict_csv(file: UploadFile = File(...)):
             "predictions": predictions.tolist(),
             "row_count": len(predictions),
             "model_info": {
-                "model_type": model_metadata.get('best_model_name', 'LightGBM') if model_metadata else 'LightGBM',
-                "version": model_metadata.get('timestamp', 'Unknown') if model_metadata else 'Unknown',
-                "prediction_count": len(predictions)
+                "model_type": get_model_type_from_metadata(),
+                "version": get_model_version(),
+                "prediction_count": len(predictions),
+                "performance": get_model_performance()
             }
         }
         
@@ -257,17 +327,20 @@ async def get_model_info():
     
     response = {
         "model_loaded": True,
+        "model_type": get_model_type_from_metadata(),
+        "version": get_model_version(),
         "feature_count": len(feature_names),
-        "features": feature_names
+        "features": feature_names,
+        "performance": get_model_performance()
     }
     
-    if model_metadata:
-        response.update({
-            "model_type": model_metadata.get('best_model_name', 'Unknown'),
-            "timestamp": model_metadata.get('timestamp', 'Unknown'),
-            "performance": model_metadata.get('performance', {}),
-            "feature_importance": model_metadata.get('feature_importance', [])
-        })
+    # Add feature importance if available
+    if model_metadata and 'feature_importance' in model_metadata:
+        response["feature_importance"] = model_metadata['feature_importance']
+    
+    # Add all model comparison data if available
+    if model_metadata and 'all_model_comparison' in model_metadata:
+        response["all_model_comparison"] = model_metadata['all_model_comparison']
     
     return response
 
@@ -279,11 +352,17 @@ async def reload_model():
         return {
             "status": "success",
             "message": "Model reloaded successfully",
-            "model_type": model_metadata.get('best_model_name', 'Unknown') if model_metadata else 'Unknown'
+            "model_type": get_model_type_from_metadata(),
+            "model_version": get_model_version(),
+            "model_loaded": model is not None
         }
     except Exception as e:
         logger.error(f"Model reload error: {e}")
-        raise HTTPException(status_code=500, detail=f"Model reload failed: {str(e)}")
+        return {
+            "status": "error", 
+            "message": f"Model reload failed: {str(e)}",
+            "model_loaded": model is not None
+        }
 
 if __name__ == "__main__":
     import uvicorn
