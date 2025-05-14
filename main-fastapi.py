@@ -58,8 +58,16 @@ class PredictionResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model on startup"""
-    await load_latest_model()
+    """Load model on startup - with timeout handling"""
+    try:
+        # Load model asynchronously with timeout
+        task = asyncio.create_task(load_latest_model())
+        await asyncio.wait_for(task, timeout=60.0)  # 60 second timeout
+    except asyncio.TimeoutError:
+        logger.warning("Model loading timed out during startup. Will load on first request.")
+    except Exception as e:
+        logger.warning(f"Failed to load model during startup: {e}. Will retry on first request.")
+
 
 async def load_latest_model():
     """Load the latest model from Cloud Storage"""
@@ -131,6 +139,14 @@ async def health_check():
         "timestamp": model_metadata.get('timestamp', 'Unknown') if model_metadata else 'Unknown'
     }
 
+async def ensure_model_loaded():
+    """Ensure model is loaded before prediction"""
+    global model
+    if model is None:
+        await load_latest_model()
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not available")
+    
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_single(request: SinglePredictionRequest):
     """Single prediction endpoint"""

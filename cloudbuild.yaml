@@ -30,7 +30,10 @@ steps:
       '--memory', '2Gi',
       '--timeout', '300',
       '--concurrency', '100',
-      '--set-env-vars', 'MODEL_BUCKET=ml-data-451319'
+      '--port', '8080',
+      '--set-env-vars', 'MODEL_BUCKET=ml-data-451319',
+      '--cpu-boost', 
+      '--execution-environment', 'gen2'  
     ]
 
 options:
