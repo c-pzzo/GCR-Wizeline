@@ -3,25 +3,20 @@ substitutions:
   _REGION: 'us-central1'
   _REPOSITORY: 'ml-models'
   _SERVICE_NAME: 'ml-prediction-service'
-  _SERVICE_ACCOUNT: 'main@virtualtryon-451319.iam.gserviceaccount.com'
+  _SERVICE_ACCOUNT: 'main-mlops-wzline@virtualtryon-451319.iam.gserviceaccount.com'
 
 steps:
-  # Build Docker image
-  - name: 'gcr.io/cloud-builders/docker'
+  # Step 1: Build image with Cloud Buildpacks and push to Artifact Registry
+  - name: 'gcr.io/k8s-skaffold/pack'
+    entrypoint: 'pack'
     args: [
       'build',
-      '-t', '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}',
-      '.'
+      '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}',
+      '--builder', 'gcr.io/buildpacks/builder:v1',
+      '--publish'
     ]
 
-  # Push to Artifact Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args: [
-      'push',
-      '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}'
-    ]
-
-  # Deploy to Cloud Run
+  # Step 2: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'gcloud'
     args: [
@@ -35,7 +30,10 @@ steps:
       '--memory', '2Gi',
       '--timeout', '300',
       '--concurrency', '100',
-      '--set-env-vars', 'MODEL_BUCKET=ml-data-451319'
+      '--port', '8080',
+      '--set-env-vars', 'MODEL_BUCKET=ml-data-451319',
+      '--cpu-boost', 
+      '--execution-environment', 'gen2'  
     ]
 
 options:
