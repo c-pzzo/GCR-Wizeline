@@ -19,7 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Create startup script that properly handles $PORT
+RUN echo '#!/bin/bash\nexec uvicorn main-fastapi:app --host=0.0.0.0 --port=$PORT' > /start.sh \
+    && chmod +x /start.sh
+
 EXPOSE 8080
 
-# Run the application
-CMD ["uvicorn", "main-fastapi:app", "--host", "0.0.0.0", "--port", "$PORT"] 
+# Use the startup script instead of direct CMD
+CMD ["/start.sh"]
