@@ -3,7 +3,7 @@ substitutions:
   _REGION: 'us-central1'
   _REPOSITORY: 'ml-models'
   _SERVICE_NAME: 'ml-prediction-service'
-  _SERVICE_ACCOUNT: 'main@virtualtryon-451319.iam.gserviceaccount.com'
+  _SERVICE_ACCOUNT: 'main-mlops-wzline@virtualtryon-451319.iam.gserviceaccount.com'
 
 steps:
   # Build Docker image
