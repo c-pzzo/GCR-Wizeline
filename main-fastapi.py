@@ -124,7 +124,7 @@ async def startup_event():
         logger.info("⚠️ Service will continue without model. Use /model/reload to load manually.")
 
 async def load_latest_model():
-    """Load the latest model from Cloud Storage with detailed logging"""
+    """Load the latest model from Cloud Storage with detailed logging and version compatibility"""
     global model, model_metadata
     
     bucket_name = os.getenv('MODEL_BUCKET', 'ml-data-451319')
@@ -165,10 +165,60 @@ async def load_latest_model():
         model_blob.download_to_filename(temp_model_path)
         logger.info(f"✅ Model downloaded to {temp_model_path}")
         
-        # Load model
+        # Load model with version compatibility handling
         logger.info("📦 Loading model with joblib...")
-        model = joblib.load(temp_model_path)
-        logger.info(f"✅ Model loaded successfully! Type: {type(model)}")
+        logger.info(f"🔧 Environment info: NumPy {np.__version__}, LightGBM {lgb.__version__ if 'lgb' in globals() else 'not imported'}")
+        
+        try:
+            model = joblib.load(temp_model_path)
+            logger.info(f"✅ Model loaded successfully! Type: {type(model)}")
+            
+            # Verify model can make predictions
+            logger.info("🧪 Testing model with dummy data...")
+            test_data = np.zeros((1, 20))  # Create dummy feature vector
+            _ = model.predict(test_data)
+            logger.info("✅ Model prediction test successful")
+            
+        except ImportError as e:
+            if "ComplexWarning" in str(e):
+                logger.error("❌ NumPy version incompatibility detected!")
+                logger.error("The model was trained with a different NumPy version.")
+                logger.error("Current NumPy version: " + np.__version__)
+                logger.error("Recommendation: The model needs to be retrained with the current NumPy version")
+                raise Exception(f"NumPy version mismatch: {e}")
+            elif "lightgbm" in str(e).lower():
+                logger.error("❌ LightGBM version incompatibility detected!")
+                logger.error("The model was trained with a different LightGBM version.")
+                logger.error("Recommendation: The model needs to be retrained with the current LightGBM version")
+                raise Exception(f"LightGBM version mismatch: {e}")
+            else:
+                logger.error(f"❌ Import error while loading model: {e}")
+                raise Exception(f"Model loading import error: {e}")
+                
+        except Exception as e:
+            # Check if it's a version-related issue
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['numpy', 'version', 'lightgbm', 'sklearn']):
+                logger.error("❌ Potential version compatibility issue detected!")
+                logger.error(f"Error details: {e}")
+                logger.error("Environment versions:")
+                logger.error(f"  - NumPy: {np.__version__}")
+                logger.error(f"  - Pandas: {pd.__version__}")
+                try:
+                    import lightgbm as lgb
+                    logger.error(f"  - LightGBM: {lgb.__version__}")
+                except ImportError:
+                    logger.error("  - LightGBM: Not available")
+                try:
+                    import sklearn
+                    logger.error(f"  - Scikit-learn: {sklearn.__version__}")
+                except ImportError:
+                    logger.error("  - Scikit-learn: Not available")
+                
+                raise Exception(f"Version compatibility error: {e}")
+            else:
+                logger.error(f"❌ Unexpected error loading model: {e}")
+                raise e
         
         # Try to load metadata
         try:
@@ -179,6 +229,13 @@ async def load_latest_model():
             model_metadata = json.loads(metadata_text)
             logger.info("✅ Model metadata loaded")
             logger.info(f"📊 Model type from metadata: {get_model_type_from_metadata()}")
+            
+            # Log training environment info if available
+            if 'training_environment' in model_metadata:
+                logger.info("🔍 Training environment info:")
+                for lib, version in model_metadata['training_environment'].items():
+                    logger.info(f"  - {lib}: {version}")
+                    
         except Exception as e:
             logger.warning(f"⚠️ Could not load metadata: {e}")
             model_metadata = {"version": latest_timestamp}
@@ -187,10 +244,20 @@ async def load_latest_model():
         os.remove(temp_model_path)
         logger.info("🧹 Cleaned up temporary model file")
         
+        # Final verification
+        logger.info(f"🎉 Model {get_model_type_from_metadata()} v{get_model_version()} ready for predictions!")
+        
     except Exception as e:
         logger.error(f"❌ Failed to load model: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        # Clean up temp file if it exists
+        temp_model_path = "/tmp/model.pkl"
+        if os.path.exists(temp_model_path):
+            os.remove(temp_model_path)
+            logger.info("🧹 Cleaned up temporary model file after error")
+        
         raise
 
 @app.get("/")
